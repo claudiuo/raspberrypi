@@ -5,6 +5,19 @@
   - 10 bit: temperature in F *10 (to get one decimal) -> need to divide by 10
   - 10 bit: humidity in % *10 (to get one decimal) -> need to divide by 10
   - 8 bit: battery voltage in mV /50 (to get some decimals) -> need to multiply by 50
+
+  Because the data is sent repeatedly, we need to make sure we don't get duplicates.
+  So we store the last value received and if we get it again in the next 30s, we
+  consider it a duplicate. The temp, humidity and voltage values are sent every few minutes
+  that's why we limit the check to 30s: if we receive the same value after 30s, we
+  consider it a new value - this is possible if none of tem, humidity or voltage changed.
+
+  For the motion sensor, things are different: we don't check the sensor periodically,
+  the Arduino code reacts using interrupts so there is no interval to use to check
+  for duplicates. But there is no need to: when the motion sensor is triggered, we get
+  a message with motion=1; then the sensor is not triggered again until it resets (a few
+  seconds); when it resets, we get a message with motion=0 so the value will be different.
+  Then if the sensor is triggered again, we get motion=1 - a new value. And so on.
 */
 
 #include "RCSwitch.h"
@@ -37,8 +50,8 @@ CURL *curl;
 CURLcode res;
 boolean readyToSendToServer = false;
 
-// TODO remove test data
-unsigned int value = 4294961097;   //15-1023-999-201
+// test data
+//unsigned int value = 4294961097;   //15-1023-999-201
 //unsigned int value = 4294967295;   //15-1023-1023-255
 //unsigned int value = 4026531841;   //15-0-0-1
 
@@ -64,18 +77,17 @@ int main(int argc, char *argv[]) {
      // for more information.
      int PIN = 4;
 
-     //if(wiringPiSetup() == -1)
-     //  return 0;
+     if(wiringPiSetup() == -1)
+       return 0;
 
-     //mySwitch = RCSwitch();
-     //mySwitch.enableReceive(PIN);
+     mySwitch = RCSwitch();
+     mySwitch.enableReceive(PIN);
 
      while(1) {
 
-  		// TODO reenable to get data from the radio
-  //    if (mySwitch.available()) {
+      if (mySwitch.available()) {
 
-  //      unsigned int value = mySwitch.getReceivedValue();
+        unsigned int value = mySwitch.getReceivedValue();
 
         float crtTime = clock();
 
@@ -90,7 +102,7 @@ int main(int argc, char *argv[]) {
               // reset the startTime
               startTime = clock();
 
-              printf("Received %u\n", ++value);
+              printf("Received %u\n", value);
               // display each simple value combined in the 32 bit uint
               // first value takes only 4 bits so shift by 28
               t1 = value >> 28;
@@ -144,7 +156,7 @@ int main(int argc, char *argv[]) {
         }
 
         mySwitch.resetAvailable();
-//      }
+      }
   }
 
     if(readyToSendToServer) {
