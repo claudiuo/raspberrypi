@@ -25,8 +25,21 @@
 #include <stdio.h>
 #include <time.h>
 #include <curl/curl.h>
+#include <sqlite3.h>
 
-#define MAXBUF  1024
+#define MAXBUF 512
+void postData();
+void postSparkfun();
+void postDweet();
+void postThingspeak();
+void doPost(char buffer[]);
+void postDb(int posted);
+
+struct Data
+{
+    unsigned char stationCode, motion;
+    float temp, humid, batt;
+};
 
 RCSwitch mySwitch;
 
@@ -35,9 +48,25 @@ unsigned short t2, t3 = 0;
 float temp, humid, batt = 0;
 
 // sparkfun phantIo constants
-char serverUrl[] = "http://data.sparkfun.com";
-char publicKey[] = "pwwWW5lZlgCdJQEqzOrO";
-char privateKey[] = "<private_key>";
+char sparkfunServerUrl[] = "http://data.sparkfun.com";
+char publicKeyDHT[] = "pwwWW5lZlgCdJQEqzOrO";
+char privateKeyDHT[] = "<private_key>";
+char publicKeyPIR[] = "2J1G21WG2auYDrlKawXw";
+char privateKeyPIR[] = "<private_key>";
+
+char dweetServerUrl[] = "https://dweet.io/dweet/for/";
+char dweetDHTName[] = "Arduino2RasPi_temp";
+char dweetPIRName[] = "Arduino2RasPi_motion";
+
+char thingspeakServerUrl[] = "http://api.thingspeak.com";
+char tsPrivateKeyDHT[] = "<private_key>";
+char tsPrivateKeyPIR[] = "<private_key>";
+char tsStationKey[] = "field1";
+char tsMotionKey[] = "field2";
+char tsHumidityKey[] = "field2";
+char tsTempKey[] = "field3";
+char tsVoltageKey[] = "field4";
+
 char stationKey[] = "station";
 char motionKey[] = "motion";
 char humidityKey[] = "humidity";
@@ -46,24 +75,54 @@ char voltageKey[] = "voltage";
 
 char buffer[MAXBUF];
 
+boolean isMotion = false;
+
 CURL *curl;
 CURLcode res;
 boolean readyToSendToServer = false;
+struct Data data;
+int responseCode = 0;
+
+//time_t rawtime;
+//struct tm * timeinfo;
+//char timeBuffer[80];
+
+sqlite3 *dbConn;
+sqlite3_stmt *dbRes;
+int dbError;
+char dbBuffer[MAXBUF];
+char sqlInsertDHT[] = "INSERT INTO dht (station, temp, humidity, voltage, posted) values(%u, %.1f, %.1f, %.1f, %u)";
+char sqlInsertPIR[] = "INSERT INTO pir (station, motion, posted) values(%u, %u, %u)";
+
 
 // test data
 //unsigned int value = 4294961097;   //15-1023-999-201
 //unsigned int value = 4294967295;   //15-1023-1023-255
 //unsigned int value = 4026531841;   //15-0-0-1
 
+size_t function_pt(char *ptr, size_t size, size_t nmemb, void *stream) {
+    printf("%s\n", ptr);
+    responseCode = atoi(ptr);
+    return size * nmemb;
+}
+
 int main(int argc, char *argv[]) {
 
     float startTime = clock();
+    dbError = sqlite3_open("sensors.db", &dbConn);
+    if (dbError) {
+        puts("Can not open database");
+        exit(0);
+    }
 
     curl = curl_easy_init();
     if(curl) {
         readyToSendToServer = true;
         // in case it is redirected, tell libcurl to follow redirection
         curl_easy_setopt(curl, CURLOPT_FOLLOWLOCATION, 1L);
+        // write the response to a string
+        curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, function_pt);
+        // TODO set a timeout so we don't block for a long time
     }
 
     // we get lots of duplicates in the same transmission so we'll remember
@@ -92,7 +151,7 @@ int main(int argc, char *argv[]) {
         float crtTime = clock();
 
         if (value == 0) {
-          printf("Unknown value");
+          printf("Unknown encoding");
         } else {
           if(value == lastValue && (crtTime-startTime)/CLOCKS_PER_SEC < 30) {
               // nothing to do, it's a duplicate that came in less than 30s
@@ -102,7 +161,7 @@ int main(int argc, char *argv[]) {
               // reset the startTime
               startTime = clock();
 
-              printf("Received %u\n", value);
+              printf("\nReceived %u\n", value);
               // display each simple value combined in the 32 bit uint
               // first value takes only 4 bits so shift by 28
               t1 = value >> 28;
@@ -114,40 +173,37 @@ int main(int argc, char *argv[]) {
               t3 = value >> 8 & 0x3FF;   // 3FF = 00001111111111
               // last value is the last byte, forcing a convertion from int to byte will get the value
               t4 = value;
-              printf("single values: %u-%i-%i-%i\n", t1, t2, t3, t4);
+              printf("raw values: %u-%i-%i-%i\n", t1, t2, t3, t4);
+
+              data.stationCode = 0;
+              data.motion = 0;
+              data.temp = 0.0;
+              data.humid = 0.0;
+              data.batt = 0.0;
 
               // if t2 and t3 are 0, it's motion sensor data; otherwise is temp/humid/batt
               if(t2 == 0 && t3 ==0) {
+                  isMotion = true;
                   // real values
                   stationCode = t1;    // numeric code 0-15
                   motion = t4;         // 0=off,1=on
                   printf("single values: %u-%u\n", stationCode, motion);
-                  // send temp/humid/batt sensor data: http://data.sparkfun.com/input/[publicKey]?private_key=[privateKey]&station=[value]&humidity=[value]&temp=[value]&voltage=[value]&motion=[value]
-                  sprintf(buffer,
-                        "%s/input/%s?private_key=%s&%s=%u&%s=%u&%s=%.1f&%s=%.1f&%s=%.1f", serverUrl, publicKey, privateKey,
-                        stationKey, stationCode, motionKey, motion, humidityKey, 0.0, tempKey, 0.0, voltageKey, 0.0);
+                  data.stationCode = stationCode;
+                  data.motion = motion;
+                  postData();
               } else {
+                  isMotion = false;
                   // real values
                   stationCode = t1;    // numeric code 0-15
                   temp = t2 / 10.0;    // F
                   humid = t3 / 10.0;   // %
                   batt = t4 * 50.0;    // mV
                   printf("single values: %u-%.1f-%.1f-%.1f\n", stationCode, temp, humid, batt);
-                  // send temp/humid/batt sensor data: http://data.sparkfun.com/input/[publicKey]?private_key=[privateKey]&station=[value]&humidity=[value]&temp=[value]&voltage=[value]&motion=[value]
-                  sprintf(buffer,
-                        "%s/input/%s?private_key=%s&%s=%u&%s=%u&%s=%.1f&%s=%.1f&%s=%.1f", serverUrl, publicKey, privateKey,
-                        stationKey, stationCode, motionKey, 0, humidityKey, humid, tempKey, temp, voltageKey, batt);
-              }
-              printf(buffer);
-              if(readyToSendToServer) {
-                curl_easy_setopt(curl, CURLOPT_URL, buffer);
-
-                /* Perform the request, res will get the return code */
-                res = curl_easy_perform(curl);
-                /* Check for errors */
-                if(res != CURLE_OK) {
-                    fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
-                }
+                  data.stationCode = stationCode;
+                  data.temp = temp;
+                  data.humid = humid;
+                  data.batt = batt;
+                  postData();
               }
 
               // store the new value as lastValue
@@ -157,11 +213,116 @@ int main(int argc, char *argv[]) {
 
         mySwitch.resetAvailable();
       }
-  }
+    }
 
     if(readyToSendToServer) {
         /* always cleanup */
         curl_easy_cleanup(curl);
     }
+//    sqlite3_finalize(dbRes);
+    sqlite3_close(dbConn);
+
     exit(0);
+}
+
+// data doesn't get modified so pass by value
+void postData()
+{
+    // able to use the same curl because it is not dependent on a url
+    postSparkfun();
+    postDweet();
+    postThingspeak();
+}
+
+void postSparkfun() {
+    buffer[0] = '\0';
+    // post to data.sparkfun.com
+    if(isMotion) {
+        // send motion sensor data
+        // http://data.sparkfun.com/input/[publicKey]?private_key=[privateKey]&station=[value]&motion=[value]
+        sprintf(buffer,
+            "%s/input/%s?private_key=%s&%s=%u&%s=%u", sparkfunServerUrl, publicKeyPIR, privateKeyPIR,
+            stationKey, data.stationCode, motionKey, data.motion);
+    } else {
+        // send temp/humid/batt sensor data
+        // http://data.sparkfun.com/input/[publicKey]?private_key=[privateKey]&station=[value]&humidity=[value]&temp=[value]&voltage=[value]
+        sprintf(buffer,
+            "%s/input/%s?private_key=%s&%s=%u&%s=%.1f&%s=%.1f&%s=%.1f", sparkfunServerUrl, publicKeyDHT, privateKeyDHT,
+            stationKey, data.stationCode, humidityKey, data.humid, tempKey, data.temp, voltageKey, data.batt);
+    }
+    doPost(buffer);
+}
+
+void postDweet() {
+    buffer[0] = '\0';
+    // post to dweet.io
+    if(isMotion) {
+        // send motion sensor data
+        // https://dweet.io/dweet/for/my-thing-name?station=[value]&motion=[value]
+        sprintf(buffer,
+            "%s%s?%s=%u&%s=%u", dweetServerUrl, dweetPIRName,
+            stationKey, data.stationCode, motionKey, data.motion);
+    } else {
+        // send temp/humid/batt sensor data
+        // https://dweet.io/dweet/for/my-thing-name?station=[value]&humidity=[value]&temp=[value]&voltage=[value]
+        sprintf(buffer,
+            "%s%s?%s=%u&%s=%.1f&%s=%.1f&%s=%.1f", dweetServerUrl, dweetDHTName,
+            stationKey, data.stationCode, humidityKey, data.humid, tempKey, data.temp, voltageKey, data.batt);
+    }
+    doPost(buffer);
+}
+
+void postThingspeak() {
+    buffer[0] = '\0';
+    // post to api.thingspeak.com
+    if(isMotion) {
+        // send motion sensor data
+        // http://api.thingspeak.com/update?api_key=[privateKey]&field1=[value]&field2=[value]
+        sprintf(buffer,
+            "%s/update?api_key=%s&%s=%u&%s=%u", thingspeakServerUrl, tsPrivateKeyPIR,
+            tsStationKey, data.stationCode, tsMotionKey, data.motion);
+    } else {
+        // send temp/humid/batt sensor data
+        // http://api.thingspeak.com/update?api_key=[privateKey]&field1=[value]&field2=[value]&field3=[value]&field4=[value]
+        sprintf(buffer,
+            "%s/update?api_key=%s&%s=%u&%s=%.1f&%s=%.1f&%s=%.1f", thingspeakServerUrl, tsPrivateKeyDHT,
+            tsStationKey, data.stationCode, tsHumidityKey, data.humid, tsTempKey, data.temp, tsVoltageKey, data.batt);
+    }
+    // write to db
+    doPost(buffer);
+    unsigned short posted = 1;
+    if(responseCode == 0) {
+        // if we got 0 in the responseCode, the post was not accepted (less than 15s): posted = 0
+        posted = 0;
+    }
+    // post to db (only when posting to thinkspeak for now)
+    postDb(posted);
+}
+
+void doPost(char buffer[]) {
+    printf("\n%s\n", buffer);
+    if(readyToSendToServer) {
+        curl_easy_setopt(curl, CURLOPT_URL, buffer);
+
+        /* Perform the request, res will get the return code */
+        res = curl_easy_perform(curl);
+        /* Check for errors */
+        if(res != CURLE_OK) {
+            fprintf(stderr, "curl_easy_perform() failed: %s\n", curl_easy_strerror(res));
+        }
+    }
+}
+
+void postDb(int posted) {
+    dbBuffer[0] = '\0';
+    if(isMotion) {
+        sprintf(dbBuffer, sqlInsertPIR, data.stationCode, motion, posted);
+    } else {
+        sprintf(dbBuffer, sqlInsertDHT, data.stationCode, data.temp, data.humid, data.batt, posted);
+    }
+    puts(dbBuffer);
+    dbError = sqlite3_exec(dbConn, dbBuffer, 0, 0, 0);
+    if (dbError) {
+        puts("Can not insert into database");
+    }
 }
