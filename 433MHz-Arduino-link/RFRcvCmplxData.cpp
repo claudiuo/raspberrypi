@@ -18,6 +18,12 @@
   a message with motion=1; then the sensor is not triggered again until it resets (a few
   seconds); when it resets, we get a message with motion=0 so the value will be different.
   Then if the sensor is triggered again, we get motion=1 - a new value. And so on.
+
+  RX:
+  - Connect pin 1 (on the left) of the sensor to GROUND
+  - Connect pin 2 of the sensor to whatever your RXPIN is: in my case PIN 4 (wiringPi)/pin 16 (header)/pin 23 (BCM)
+  (see https://projects.drogon.net/raspberry-pi/wiringpi/pins/ for more infor)
+  - Connect pin 3 (on the right) of the sensor to +5V.
 */
 
 #include "RCSwitch.h"
@@ -131,9 +137,6 @@ int main(int argc, char *argv[]) {
     // transmission so treat it as a new value so it gets posted (see if below)
     unsigned int lastValue = 0;
 
-     // This pin is not the first pin on the RPi GPIO header!
-     // Consult https://projects.drogon.net/raspberry-pi/wiringpi/pins/
-     // for more information.
      int PIN = 4;
 
      if(wiringPiSetup() == -1)
