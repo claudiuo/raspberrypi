@@ -2,4 +2,6 @@ Project idea: multiple Arduinos with TX radios, each equipped with DHT and PIR s
 
 The comments in the code for both the sender (Arduino) and the receiver (Raspberry Pi) pretty much explain everything (how it works, how to connect the sensors and radios, and so on). More details can be found [on my blog](http://ivyco.blogspot.com/2014/09/arduino-sensors-to-raspberry-pi-using.html).
 
+You will need to build RCSwitch (which I got from [ninjablocks's repo](https://github.com/ninjablocks/433Utils/tree/master/RPi_utils)) and also install wiringPi, curl and sqlite3.
+
 <img src="Ard_DHT_PIR_433-radio_bb.png" width="50%" height="auto"/><img src="RPi_433-radio_bb.png" width="40%" height="auto"/>
